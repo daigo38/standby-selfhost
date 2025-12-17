@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createHmac, timingSafeEqual } from 'crypto'
-import { writeFile, mkdir } from 'fs/promises'
-import { join } from 'path'
+import OpenAI from 'openai'
 
 const WEBHOOK_SECRET = process.env.STANDBY_WEBHOOK_SECRET || ''
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 const MAX_TIMESTAMP_AGE_MS = 5 * 60 * 1000 // 5 minutes
+
+// Supported transcription models
+const SUPPORTED_MODELS = [
+  'gpt-4o-transcribe',
+  'gpt-4o-mini-transcribe',
+  'gpt-4o-transcribe-diarize',
+  'whisper-1',
+] as const
+type TranscriptionModel = typeof SUPPORTED_MODELS[number]
+const DEFAULT_MODEL: TranscriptionModel = 'gpt-4o-transcribe'
 
 interface VerifyResult {
   valid: boolean
@@ -59,6 +69,7 @@ export async function POST(request: NextRequest) {
     const chunkId = formData.get('chunkId') as string | null
     const timestamp = formData.get('timestamp') as string | null
     const userId = formData.get('userId') as string | null
+    const requestedModel = formData.get('model') as string | null
 
     // Validate required fields
     if (!audio || !sessionId || !chunkId || !userId) {
@@ -67,6 +78,11 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+
+    // Validate and set model
+    const model: TranscriptionModel = requestedModel && SUPPORTED_MODELS.includes(requestedModel as TranscriptionModel)
+      ? (requestedModel as TranscriptionModel)
+      : DEFAULT_MODEL
 
     // Get signature headers
     const signatureTimestamp = request.headers.get('x-standby-timestamp') || ''
@@ -86,28 +102,45 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error }, { status: 401 })
     }
 
-    // Save audio file
-    // Use /tmp on Vercel (serverless), otherwise use local uploads directory
-    const baseDir = process.env.VERCEL ? '/tmp' : join(process.cwd(), 'uploads')
-    const uploadsDir = join(baseDir, sessionId)
-    await mkdir(uploadsDir, { recursive: true })
+    // Transcribe audio
+    const isDiarize = model === 'gpt-4o-transcribe-diarize'
 
-    const filename = `${chunkId}.m4a`
-    const filepath = join(uploadsDir, filename)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const transcription = await openai.audio.transcriptions.create({
+      file: audio,
+      model,
+      language: 'ja',
+      // diarize model requires diarized_json format and chunking_strategy for audio > 30s
+      ...(isDiarize && {
+        response_format: 'diarized_json',
+        chunking_strategy: 'auto',
+      }),
+    } as any)
 
-    const bytes = await audio.arrayBuffer()
-    await writeFile(filepath, Buffer.from(bytes))
-
-    console.log('Received audio:', {
+    console.log('Transcribed audio:', {
       sessionId,
       chunkId,
       timestamp,
       userId,
-      filename,
-      size: bytes.byteLength,
+      model,
+      text: transcription.text,
     })
 
-    return NextResponse.json({ success: true }, { status: 200 })
+    // Build response based on model type
+    const response: Record<string, unknown> = {
+      success: true,
+      sessionId,
+      chunkId,
+      model,
+      text: transcription.text,
+    }
+
+    // Include speaker segments for diarize model
+    if (isDiarize && 'segments' in transcription) {
+      response.segments = transcription.segments
+    }
+
+    return NextResponse.json(response, { status: 200 })
   } catch (error) {
     console.error('Error processing audio:', error)
     return NextResponse.json(
