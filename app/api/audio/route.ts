@@ -87,7 +87,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Save audio file
-    const uploadsDir = join(process.cwd(), 'uploads', sessionId)
+    // Use /tmp on Vercel (serverless), otherwise use local uploads directory
+    const baseDir = process.env.VERCEL ? '/tmp' : join(process.cwd(), 'uploads')
+    const uploadsDir = join(baseDir, sessionId)
     await mkdir(uploadsDir, { recursive: true })
 
     const filename = `${chunkId}.m4a`
