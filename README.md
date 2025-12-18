@@ -2,6 +2,9 @@
 
 StandByアプリから送信される音声を受信し、文字起こしを行うサーバー。
 
+StandByアプリはこちらからインストール↓
+### https://testflight.apple.com/join/CCavqryM
+
 ## セットアップ
 
 ### 1. 依存関係のインストール
